@@ -298,25 +298,92 @@ class FileSorter:
         return file_time < cutoff_date
 
     def is_supported_file(self, filename: str) -> bool:
-        """Check if file has supported extension.
+        """Check if file has supported extension and is not hidden.
+
+        Mimics immich_uploader's _is_upload_candidate logic.
 
         Args:
             filename: Filename to check
 
         Returns:
-            True if extension is supported
+            True if file should be processed
         """
+        # Skip hidden files (starting with .)
+        if filename.startswith("."):
+            return False
+
         ext = Path(filename).suffix.lower()
         return ext in self.config.supported_extensions
 
+    def _wait_for_file_readiness(
+        self,
+        file_path: Path,
+        timeout_seconds: float = 30.0,
+        check_interval_seconds: float = 0.5,
+        stable_checks: int = 3,
+    ) -> tuple[bool, str]:
+        """Wait for a file to be fully written and stable.
+
+        Mimics immich_uploader's _wait_for_file_readiness logic.
+        Prevents processing files that are still being written by FTP.
+
+        Args:
+            file_path: Path to the file to check
+            timeout_seconds: Maximum time to wait for file stability
+            check_interval_seconds: Time between checks
+            stable_checks: Number of consecutive stable checks required
+
+        Returns:
+            Tuple of (is_ready, reason)
+        """
+        import time
+
+        timeout_seconds = max(timeout_seconds, 0.1)
+        check_interval_seconds = max(check_interval_seconds, 0.01)
+        stable_checks = max(stable_checks, 1)
+
+        deadline = time.monotonic() + timeout_seconds
+        stable_counter = 0
+        previous_signature: tuple[int, int] | None = None
+
+        while time.monotonic() <= deadline:
+            try:
+                if not file_path.exists() or not file_path.is_file():
+                    stable_counter = 0
+                    previous_signature = None
+                    time.sleep(check_interval_seconds)
+                    continue
+
+                stat = file_path.stat()
+            except OSError:
+                stable_counter = 0
+                previous_signature = None
+                time.sleep(check_interval_seconds)
+                continue
+
+            current_signature = (stat.st_size, stat.st_mtime_ns)
+
+            if current_signature == previous_signature:
+                stable_counter += 1
+            else:
+                previous_signature = current_signature
+                stable_counter = 1
+
+            if stable_counter >= stable_checks:
+                return True, "stable"
+
+            time.sleep(check_interval_seconds)
+
+        return False, "timeout"
+
     def scan_directory(self, directory: str) -> List[Tuple[Path, str]]:
-        """Scan a directory for files to process.
+        """Scan a directory for files to process, waiting for readiness.
 
         Args:
             directory: Directory to scan
 
         Returns:
-            List of tuples (full_path, filename)
+            List of tuples (full_path, filename) for ready files
         """
         files = []
         dir_path = Path(directory)
@@ -328,7 +395,15 @@ class FileSorter:
         try:
             for file_path in dir_path.iterdir():
                 if file_path.is_file() and self.is_supported_file(file_path.name):
-                    files.append((file_path, file_path.name))
+                    # Wait for file to be fully written (FTP may still be writing)
+                    is_ready, reason = self._wait_for_file_readiness(file_path)
+                    if is_ready:
+                        files.append((file_path, file_path.name))
+                        self.logger.debug(f"File ready: {file_path.name}")
+                    else:
+                        self.logger.warning(
+                            f"File not ready after timeout: {file_path.name}"
+                        )
         except Exception as e:
             self.logger.error(f"Error scanning directory {directory}: {e}")
 
