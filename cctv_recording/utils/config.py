@@ -32,6 +32,40 @@ class Kafka(BaseModel):
     images_topic: str
 
 
+class FTPSorterConfig(BaseModel):
+    """Configuration for FTP file sorting.
+
+    This configuration allows sorting files from FTP directories
+    into a date-based directory structure.
+
+    Example filename pattern for Hikvision cameras:
+        garage-01_00_20260323182654.mp4
+
+    Pattern groups:
+        - camera_name: Name of the camera (e.g., "garage-01")
+        - spacing: Optional separator (e.g., "_00_")
+        - year: 4-digit year (e.g., "2026")
+        - month: 2-digit month (e.g., "03")
+        - day: 2-digit day (e.g., "23")
+        - hour: 2-digit hour (e.g., "18")
+        - minute: 2-digit minute (e.g., "26")
+        - second: 2-digit second (e.g., "54")
+        - ext: File extension (e.g., "mp4", "jpg", "avi")
+    """
+
+    enabled: bool = False
+    ftp_camera_dirs: List[str] = Field(default_factory=list)
+    filename_pattern: str = (
+        r"(?P<camera_name>.+?)_(?P<spacing>_00_)?(?P<year>\d{4})(?P<month>\d{2})(?P<day>\d{2})"
+        r"(?P<hour>\d{2})(?P<minute>\d{2})(?P<second>\d{2})\.(?P<ext>mp4|avi|jpg|jpeg|mkv)"
+    )
+    supported_extensions: List[str] = Field(
+        default_factory=lambda: [".mp4", ".avi", ".jpg", ".jpeg", ".mkv"]
+    )
+    retention_days: int = 30
+    delete_source: bool = True
+
+
 class Config(BaseModel):
     cameras: List[Camera]
     cameras_dir: str
@@ -39,6 +73,7 @@ class Config(BaseModel):
     audio_duration: Optional[int] = None
     still_images: Optional[str] = None
     still_image_interval: Optional[int] = None
+    ftp_sorter: Optional[FTPSorterConfig] = None
 
 
 def genconf() -> Optional[Config]:
